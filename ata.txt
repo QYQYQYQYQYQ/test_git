@@ -1,0 +1,110 @@
+def from_geometric(graph):
+    [x, y] = graph.edge_index
+    x = x.numpy()
+    y = y.numpy()
+    num = len(x)
+    N = max(x.max(), y.max())+1
+    z = np.ones(num)
+    print(x)
+    print(y)
+    print(z)
+    to_graph = csr_matrix((z, (x, y)), shape = (N, N))
+    return to_graph
+
+def get_noise(noise_type, size, eps=10, sensitivity=2):
+    noise = np.random.laplace(0, sensitivity/eps, size)
+
+    return noise
+
+
+def perturb_adj_continuous(adj, epsilon):
+    n_nodes = adj.shape[0]
+    n_edges = len(adj.data) // 2
+
+    N = n_nodes
+    t = time.time()
+
+    A = sp.tril(adj, k=-1)
+    print('getting the lower triangle of adj matrix done!')
+
+    eps_1 = epsilon * 0.01
+    eps_2 = epsilon - eps_1
+    noise = get_noise(noise_type='laplacian', size=(N, N),
+                    eps=eps_2, sensitivity=1)
+    noise *= np.tri(*noise.shape, k=-1, dtype=bool)
+    print(f'generating noise done using {time.time() - t} secs!')
+
+    A += noise
+    print(f'adding noise to the adj matrix done!')
+
+    t = time.time()
+    n_edges_keep = n_edges + int(
+        get_noise(noise_type='laplacian', size=1,
+                eps=eps_1, sensitivity=1)[0])
+    print(f'edge number from {n_edges} to {n_edges_keep}')
+
+    t = time.time()
+    a_r = A.A.ravel()
+
+    n_splits = 4
+    len_h = len(a_r) // n_splits
+    ind_list = []
+    for i in tqdm(range(n_splits - 1)):
+        ind = np.argpartition(a_r[len_h*i:len_h*(i+1)], -n_edges_keep)[-n_edges_keep:]
+        ind_list.append(ind + len_h * i)
+
+    ind = np.argpartition(a_r[len_h*(n_splits-1):], -n_edges_keep)[-n_edges_keep:]
+    ind_list.append(ind + len_h * (n_splits - 1))
+
+    ind_subset = np.hstack(ind_list)
+    a_subset = a_r[ind_subset]
+    ind = np.argpartition(a_subset, -n_edges_keep)[-n_edges_keep:]
+
+    row_idx = []
+    col_idx = []
+    for idx in ind:
+        idx = ind_subset[idx]
+        row_idx.append(idx // N)
+        col_idx.append(idx % N)
+        assert(col_idx < row_idx)
+    data_idx = np.ones(n_edges_keep, dtype=np.int32)
+    print(f'data preparation done using {time.time() - t} secs!')
+
+    mat = sp.csr_matrix((data_idx, (row_idx, col_idx)), shape=(N, N))
+    return mat + mat.T
+
+def from_csrgraph(origingraph, add_noise):
+    x, y = add_noise.nonzero()
+    print(x)
+    print(y)
+    x, y = x.tolist(), y.tolist()
+    origingraph.edge_index = torch.tensor([x, y])
+    return origingraph
+
+if __name__ == "__main__":
+    aa = [1, 2, 3, 4]
+    bb = [5, 6]
+    a = torch.tensor(aa)
+    b = torch.tensor(bb)
+#    print(int(a.size()[0]))
+#    print(a[:int(b.size()[0])])
+    edge_index = torch.tensor([[2, 3, 4, 8], [3, 2, 8, 4]], dtype=torch.long)
+    edge_label = [2, 2, 3, 3]
+    data1 = Data(edge_index=edge_index)
+    data1.edge_label = edge_label
+    edge_index2 = torch.tensor([[0, 2, 4, 2], [2, 0, 2, 4]], dtype=torch.long)
+    edge_label2 = [3, 3, 4, 4]
+    data2 = Data(edge_index=edge_index2)
+    data2.edge_label = edge_label2
+    graphs = [data1, data2]
+
+    edge_index_global = torch.tensor([[2, 3, 4, 8, 0, 2, 4, 2], [3, 2, 8, 4, 2, 0, 2, 4]], dtype=torch.long)
+    edge_label_global = torch.tensor([2, 2, 3, 3, 3, 3, 4, 4], dtype=torch.long)
+    global_graph = Data(edge_index=edge_index_global)
+    global_graph.edge_label = edge_label_global
+
+    csrgraph = from_geometric(global_graph)
+    add_noise = perturb_adj_continuous(csrgraph, 30)
+    global_graph = from_csrgraph(global_graph, add_noise)
+    print(global_graph.edge_index)
+
